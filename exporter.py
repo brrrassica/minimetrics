@@ -361,6 +361,8 @@ def network_dropped_packets() -> int:
 
 def collect():
     logger.debug("Starting collect()")
+    global metrics
+    logger.debug("Declared global metrics")
     try:
         cfg = load_config()
         mode = cfg["mode"]
