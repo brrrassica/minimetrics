@@ -93,7 +93,7 @@ def memory_usage() -> float:
 
 
 def disk_io() -> tuple:
-    """Run ``iotop -b -n1 -qqq`` and extract total read/write bytes per second.
+    """Run ``iotop -b -n1 -qqq`` and extract total read/write megabytes per second.
 
     The output contains lines like ``Total DISK READ: 0.00 B/s  Total DISK WRITE: 0.00 B/s``.
     """
@@ -115,11 +115,14 @@ def disk_io() -> tuple:
                 write = float(parts[idx - 1])
             except Exception:
                 pass
-    return read, write
+    # Convert bytes per second to megabytes per second
+    read_mb = read / (1024 * 1024)
+    write_mb = write / (1024 * 1024)
+    return read_mb, write_mb
 
 
 def network_io() -> tuple:
-    """Read ``/proc/net/dev`` and sum received and transmitted bytes across all interfaces.
+    """Read ``/proc/net/dev`` and sum received and transmitted megabytes across all interfaces.
     """
     out = run_cmd("cat /proc/net/dev")
     recv = 0
@@ -134,7 +137,10 @@ def network_io() -> tuple:
                     trans += int(fields[8])
                 except Exception:
                     pass
-    return recv, trans
+    # Convert bytes to megabytes
+    recv_mb = recv / (1024 * 1024)
+    trans_mb = trans / (1024 * 1024)
+    return recv_mb, trans_mb
 
 
 def process_count() -> int:
@@ -166,6 +172,28 @@ def filesystem_usage() -> float:
     return (used / total) * 100.0 if total else 0.0
 
 
+def per_device_filesystem_usage() -> dict:
+    """Parse ``df -B1`` and return a dict mapping device names to usage percent for block devices."""
+    out = run_cmd("df -B1")
+    usage = {}
+    for line in out.splitlines():
+        if line.startswith("Filesystem"):
+            continue
+        parts = line.split()
+        if len(parts) >= 6:
+            device = parts[0]
+            # Filter for block devices (e.g., /dev/sd*, not tmpfs, etc.)
+            if device.startswith('/dev/') and not any(x in device for x in ['tmpfs', 'devtmpfs', 'squashfs']):
+                try:
+                    total = int(parts[1])
+                    used = int(parts[2])
+                    percent = (used / total) * 100.0 if total else 0.0
+                    usage[device] = percent
+                except Exception:
+                    pass
+    return usage
+
+
 def temperature() -> float:
     """Parse ``sensors`` output and return the average temperature in Celsius.
     """
@@ -195,6 +223,36 @@ def smart_health() -> int:
                 return 0
     return -1  # unknown / not available
 
+
+def swap_usage_percent() -> float:
+    """Parse ``free -b`` and return swap usage as a percentage of total."""
+    out = run_cmd("free -b")
+    for line in out.splitlines():
+        if line.startswith("Swap:"):
+            parts = line.split()
+            try:
+                total = int(parts[1])
+                used = int(parts[2])
+                return (used / total) * 100.0 if total else 0.0
+            except Exception:
+                continue
+    return 0.0
+
+
+def network_dropped_packets() -> int:
+    """Read ``/proc/net/dev`` and sum dropped packets across all interfaces."""
+    out = run_cmd("cat /proc/net/dev")
+    dropped = 0
+    for line in out.splitlines():
+        if ':' in line:
+            _, data = line.split(':', 1)
+            fields = data.split()
+            if len(fields) >= 4:
+                try:
+                    dropped += int(fields[3])
+                except Exception:
+                    pass
+    return dropped
 # ---------------------------------------------------------------------------
 # Collector loop – runs every *interval* seconds and populates the global *metrics*
 # ---------------------------------------------------------------------------
@@ -205,13 +263,24 @@ def collect():
     metrics["cpu_usage_percent"] = cpu_usage()
     metrics["memory_usage_percent"] = memory_usage()
     rd, wr = disk_io()
-    metrics["disk_read_bytes_total"] = rd
-    metrics["disk_write_bytes_total"] = wr
+    metrics["disk_read_megabytes_total"] = rd
+    metrics["disk_write_megabytes_total"] = wr
     rx, tx = network_io()
-    metrics["network_receive_bytes_total"] = rx
-    metrics["network_transmit_bytes_total"] = tx
+    metrics["network_receive_megabytes_total"] = rx
+    metrics["network_transmit_megabytes_total"] = tx
     metrics["process_count"] = process_count()
+    # Overall filesystem usage percent
     metrics["filesystem_usage_percent"] = filesystem_usage()
+    # Per-device filesystem usage metrics
+    device_usage = per_device_filesystem_usage()
+    for device, percent in device_usage.items():
+        # Sanitize device name for metric key
+        metric_name = f"filesystem_usage_percent_{device.replace('/', '_').replace('.', '_')}"
+        metrics[metric_name] = percent
+    # Swap usage percent
+    metrics["swap_usage_percent"] = swap_usage_percent()
+    # Network dropped packets total
+    metrics["network_dropped_packets_total"] = network_dropped_packets()
     if mode == "metal":
         metrics["temperature_celsius"] = temperature()
         metrics["smart_health_status"] = smart_health()

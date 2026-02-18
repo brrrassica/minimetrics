@@ -1,6 +1,6 @@
 # Lightweight Prometheus Node Exporter
 
-A minimal, self‑contained metrics exporter written in **Python 3** with a tiny **Bash** wrapper. It collects a curated set of system metrics suitable for both bare‑metal servers and VMs while keeping the memory footprint under **1 MiB**.
+A minimal, self‑contained metrics exporter written in **Python 3** with a tiny **Bash** wrapper. It collects a curated set of system metrics suitable for both bare‑metal servers and VMs while keeping the memory footprint low.
 
 ## Features
 - Low‑cardinality Prometheus exposition format (text protocol)
@@ -14,16 +14,19 @@ A minimal, self‑contained metrics exporter written in **Python 3** with a tin
 |--------|-------------|
 | `cpu_usage_percent` | Overall CPU usage percentage |
 | `memory_usage_percent` | Memory usage percentage |
-| `disk_read_bytes_total` | Total disk read bytes per second |
-| `disk_write_bytes_total` | Total disk write bytes per second |
-| `network_receive_bytes_total` | Total network received bytes |
-| `network_transmit_bytes_total` | Total network transmitted bytes |
+| `swap_usage_percent` | Swap usage percentage |
+| `disk_read_megabytes_total` | Total disk read megabytes per second |
+| `disk_write_megabytes_total` | Total disk write megabytes per second |
+| `network_receive_megabytes_total` | Total network received megabytes (cumulative) |
+| `network_transmit_megabytes_total` | Total network transmitted megabytes (cumulative) |
+| `network_dropped_packets_total` | Total dropped packets across all interfaces |
 | `process_count` | Number of processes |
 | `filesystem_usage_percent` | Aggregate filesystem usage percentage |
+| `filesystem_usage_percent_{device}` | Filesystem usage percentage per block device (e.g., `filesystem_usage_percent_dev_sda1`) |
 | `temperature_celsius` | Average temperature (metal only) |
-| `smart_health_status` | SMART health (1 = PASSED, 0 = FAILED, -1 = N/A) |
+| `smart_health_status` | SMART health (1 = PASSED, 0 = FAILED, -1 = N/A) |
 
-All metrics are exposed as **gauges**.
+All metrics are exposed as **gauges**. Network and disk I/O metrics use megabytes for better readability. Per-device filesystem metrics are dynamically generated for block devices only (e.g., /dev/sda1), increasing cardinality slightly.
 
 ## Installation
 ```bash
@@ -89,4 +92,4 @@ Run the zipapp directly:
 - The total resident set size stays well below **1 MiB** on typical Linux installations.
 
 ## License
-MIT – feel free to modify and adapt for your own monitoring stack.
+GPL v3.0 – feel free to modify and adapt for your own monitoring stack.
