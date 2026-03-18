@@ -3,7 +3,7 @@
 # It writes a pid file and redirects output to a log file.
 
 # Resolve the directory of this script (handles symlinks)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(pwd)"
 PYTHON=${PYTHON:-python3}
 LOGFILE="${SCRIPT_DIR}/exporter.log"
 PIDFILE="${SCRIPT_DIR}/exporter.pid"
