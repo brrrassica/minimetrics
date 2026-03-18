@@ -3,6 +3,7 @@
 # It writes a pid file and redirects output to a log file.
 
 # Install dependencies (assuming Debian/Ubuntu)
+sudo apt update
 sudo apt install -y smartmontools iotop lm-sensors
 
 # Resolve the directory of this script (handles symlinks)
