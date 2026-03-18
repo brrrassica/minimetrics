@@ -297,20 +297,45 @@ def temperature() -> float:
 
 
 def smart_health() -> int:
-    """Run ``smartctl -a /dev/sda`` and return 1 for *PASSED* and 0 for *FAILED*.
+    """Query all block devices with lsblk, check SMART health for each supported disk.
+    Returns 1 if all supported disks PASSED, -1 if any FAILED. Ignores unsupported disks.
     """
     try:
-        out = run_cmd("smartctl -a /dev/sda")
-        for line in out.splitlines():
-            if "SMART overall-health self-assessment test result" in line:
-                if "PASSED" in line:
-                    logger.debug("SMART health: PASSED")
-                    return 1
+        # Get list of disk names
+        lsblk_out = run_cmd("lsblk -nd --output NAME")
+        disks = [disk.strip() for disk in lsblk_out.splitlines() if disk.strip()]
+        if not disks:
+            logger.debug("No disks found")
+            return 1  # No disks, assume healthy
+
+        for disk in disks:
+            device = f"/dev/{disk}"
+            out = run_cmd(f"smartctl -a {device}")
+            
+            # Check if SMART is supported
+            supported = any("SMART support is:" in line and "Available" in line for line in out.splitlines())
+            
+            if not supported:
+                logger.debug(f"SMART not supported on {device}, ignoring")
+                continue
+            
+            # Check health
+            health_lines = [line for line in out.splitlines() if "SMART overall-health self-assessment test result" in line]
+            
+            if health_lines:
+                health_line = health_lines[0]
+                if "FAILED" in health_line:
+                    logger.warning(f"SMART health: FAILED on {device}")
+                    return -1
                 else:
-                    logger.warning("SMART health: FAILED")
-                    return 0
-        logger.warning("SMART health: unknown/not available")
-        return -1  # unknown / not available
+                    logger.debug(f"SMART health: PASSED on {device}")
+            else:
+                logger.warning(f"No health result found for {device}")
+                continue  # Treat as not failed
+
+        logger.debug("All SMART health checks passed or not applicable")
+        return 1
+        
     except Exception as e:
         logger.error(f"SMART health collection failed: {e}")
         return -1
