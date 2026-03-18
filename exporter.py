@@ -450,7 +450,11 @@ class MetricsHandler(http.server.BaseHTTPRequestHandler):
             for name, value in metrics.items():
                 lines.append(f"# HELP {name} {name.replace('_', ' ')}")
                 lines.append(f"# TYPE {name} gauge")
-                lines.append(f"{name} {value}")
+                if isinstance(value, float):
+                    value_str = "%.3f" % value
+                else:
+                    value_str = str(value)
+                lines.append(f"{name} {value_str}")
             output = ("\n".join(lines) + "\n").encode()
             self.wfile.write(output)
             logger.info(f"Served /metrics: {len(metrics)} metrics, {len(output)} bytes")
