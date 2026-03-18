@@ -4,10 +4,12 @@ import os
 import subprocess
 import threading
 import time
-import http.server
-import socketserver
+import signal
 import sys
 import logging
+import atexit
+import http.server
+import socketserver
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -19,6 +21,10 @@ logging.basicConfig(
     ]
 )
 logger.info("Logging initialized")
+
+# Global reference to the HTTP server for graceful shutdown
+_http_server = None
+_shutdown_event = threading.Event()
 
 # Path to the JSON configuration file located next to this script
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
@@ -381,8 +387,15 @@ def collect():
         # Per-device filesystem usage metrics
         device_usage = per_device_filesystem_usage()
         for device, percent in device_usage.items():
-            # Sanitize device name for metric key
-            metric_name = f"filesystem_usage_percent_{device.replace('/', '_').replace('.', '_')}"
+            # Sanitize device name for metric key - Prometheus compatible
+            # Remove leading /dev/ prefix and replace remaining / with single underscore
+            sanitized = device.lstrip('/').replace('/', '_')
+            # Replace any remaining non-alphanumeric characters (except underscore) with underscore
+            sanitized = ''.join(c if c.isalnum() or c == '_' else '_' for c in sanitized)
+            # Collapse multiple underscores into single underscore
+            while '__' in sanitized:
+                sanitized = sanitized.replace('__', '_')
+            metric_name = f"filesystem_usage_percent_{sanitized}"
             metrics[metric_name] = percent
         # Swap usage percent
         metrics["swap_usage_percent"] = swap_usage_percent()
@@ -408,13 +421,14 @@ def collector_thread():
     cfg = load_config()
     interval = cfg["interval"]
     logger.info(f"Collector thread running with interval {interval}s")
-    while True:
+    while not _shutdown_event.is_set():
         try:
             collect()
             time.sleep(interval)
         except Exception as e:
             logger.error(f"Collector thread error: {e}", exc_info=True)
             time.sleep(5)  # Backoff on error
+    logger.info("Collector thread shutting down")
 
 # ---------------------------------------------------------------------------
 # HTTP exporter – Prometheus text exposition format
@@ -437,7 +451,7 @@ class MetricsHandler(http.server.BaseHTTPRequestHandler):
                 lines.append(f"# HELP {name} {name.replace('_', ' ')}")
                 lines.append(f"# TYPE {name} gauge")
                 lines.append(f"{name} {value}")
-            output = "\n".join(lines).encode()
+            output = ("\n".join(lines) + "\n").encode()
             self.wfile.write(output)
             logger.info(f"Served /metrics: {len(metrics)} metrics, {len(output)} bytes")
         except Exception as e:
@@ -450,20 +464,50 @@ class MetricsHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def shutdown_handler(signum, frame):
+    """Handle shutdown signals (SIGINT, SIGTERM) gracefully."""
+    logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+    _shutdown_event.set()
+    sys.exit()
+
 def start_http_server():
+    global _http_server
     cfg = load_config()
     port = cfg["port"]
     logger.info(f"Starting HTTP server on port {port}")
+    
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    
+    # Register atexit handler for cleanup
+    atexit.register(cleanup)
+    
     try:
-        with socketserver.TCPServer(("", port), MetricsHandler) as httpd:
-            logger.info("HTTP server started successfully")
-            httpd.serve_forever()
+        # Create server without binding first, then set allow_reuse_address before binding
+        httpd = socketserver.TCPServer(("", port), MetricsHandler, bind_and_activate=False)
+        httpd.allow_reuse_address = True
+        httpd.server_bind()
+        httpd.server_activate()
+        _http_server = httpd
+        logger.info("HTTP server started successfully")
+        httpd.serve_forever()
     except OSError as e:
         logger.error(f"Port binding failed (perhaps in use?): {e}")
         raise
     except Exception as e:
         logger.error(f"HTTP server failed: {e}", exc_info=True)
         raise
+
+def cleanup():
+    """Clean up resources on shutdown."""
+    global _http_server
+    if _http_server:
+        logger.info("Shutting down HTTP server...")
+        _http_server.shutdown()
+        _http_server.server_close()
+        _http_server = None
+        logger.info("HTTP server shut down successfully")
 
 # ---------------------------------------------------------------------------
 # Main entry point – start collector thread and HTTP server
@@ -475,9 +519,13 @@ def main():
         threading.Thread(target=collector_thread, daemon=True).start()
         logger.info("Collector thread started")
         start_http_server()
+    except KeyboardInterrupt:
+        logger.info("Main loop interrupted by user")
     except Exception as e:
         logger.error(f"Main startup failed: {e}")
         raise
+    finally:
+        cleanup()
 
 if __name__ == "__main__":
     main()
