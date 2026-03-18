@@ -2,6 +2,9 @@
 # Simple wrapper to launch the lightweight metrics exporter as a background daemon
 # It writes a pid file and redirects output to a log file.
 
+# Install dependencies (assuming Debian/Ubuntu)
+sudo apt install -y smartmontools iotop lm-sensors
+
 # Resolve the directory of this script (handles symlinks)
 SCRIPT_DIR="$(pwd)"
 PYTHON=${PYTHON:-python3}
