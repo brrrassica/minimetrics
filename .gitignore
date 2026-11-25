@@ -1,3 +1,4 @@
 plans/
 exporter.log
 exporter.pid
+__pycache__/

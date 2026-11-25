@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -96,15 +97,13 @@ def cpu_usage() -> float:
         out = run_cmd("top -bn1")
         for line in out.splitlines():
             if "%Cpu" in line:
-                parts = line.split()
-                try:
-                    idx = parts.index("id")
-                    idle = float(parts[idx - 1])
+                # procps-ng may emit ``id,`` instead of ``id``.
+                match = re.search(r"(\d+(?:\.\d+)?)\s+id\b", line)
+                if match:
+                    idle = float(match.group(1))
                     logger.debug(f"CPU idle: {idle}%, usage: {100.0 - idle}%")
                     return 100.0 - idle
-                except Exception as e:
-                    logger.debug(f"CPU parse error: {e}")
-                    continue
+                logger.debug("No idle value found on CPU line: %s", line)
         logger.warning("No CPU line found in top output")
         return 0.0
     except Exception as e:
@@ -136,6 +135,30 @@ def memory_usage() -> float:
         return 0.0
 
 
+IOTOP_UNIT_MULTIPLIERS = {
+    "B": 1,
+    "K": 1024,
+    "M": 1024 ** 2,
+    "G": 1024 ** 3,
+    "T": 1024 ** 4,
+}
+
+
+def parse_iotop_rate(line: str, label: str) -> float | None:
+    """Return the rate after *label* in bytes/second, or ``None`` if absent.
+
+    ``iotop`` may use ``B/s``, ``K/s``, ``M/s``, ``G/s`` (or ``KiB/s`` etc.),
+    so the unit is normalized before the caller converts to MB/s.
+    """
+    pattern = rf"{re.escape(label)}\s*(\d+(?:\.\d+)?)\s*([BKMGT]i?B?)/s"
+    match = re.search(pattern, line, re.IGNORECASE)
+    if not match:
+        return None
+    value = float(match.group(1))
+    multiplier = IOTOP_UNIT_MULTIPLIERS[match.group(2)[0].upper()]
+    return value * multiplier
+
+
 def disk_io() -> tuple:
     """Run ``iotop -b -n1 -qqq`` and extract total read/write megabytes per second.
 
@@ -147,21 +170,17 @@ def disk_io() -> tuple:
         write = 0.0
         for line in out.splitlines():
             if "Total DISK READ:" in line:
-                parts = line.split()
-                try:
-                    idx = parts.index("B/s")
-                    read = float(parts[idx - 1])
-                except Exception as e:
-                    logger.debug(f"Disk read parse error: {e}")
-                    pass
+                rate = parse_iotop_rate(line, "Total DISK READ:")
+                if rate is None:
+                    logger.warning("Could not parse disk read rate: %s", line)
+                else:
+                    read = rate
             if "Total DISK WRITE:" in line:
-                parts = line.split()
-                try:
-                    idx = parts.index("B/s")
-                    write = float(parts[idx - 1])
-                except Exception as e:
-                    logger.debug(f"Disk write parse error: {e}")
-                    pass
+                rate = parse_iotop_rate(line, "Total DISK WRITE:")
+                if rate is None:
+                    logger.warning("Could not parse disk write rate: %s", line)
+                else:
+                    write = rate
         # Convert bytes per second to megabytes per second
         read_mb = read / (1024 * 1024)
         write_mb = write / (1024 * 1024)
@@ -203,10 +222,10 @@ def network_io() -> tuple:
 
 
 def process_count() -> int:
-    """Count the number of processes using ``ps -e | wc -l``.
+    """Count the number of processes using ``ps -e --no-headers | wc -l``.
     """
     try:
-        out = run_cmd("ps -e | wc -l")
+        out = run_cmd("ps -e --no-headers | wc -l")
         count = int(out.strip())
         logger.debug(f"Process count: {count}")
         return count

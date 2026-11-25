@@ -67,6 +67,11 @@ scrape_configs:
 ```
 
 ## Testing
+Run the parser unit tests from the project root:
+```bash
+python3 -m unittest discover -s tests
+```
+
 A quick sanity check can be performed with `curl`:
 ```bash
 curl http://localhost:9100/metrics
