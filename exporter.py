@@ -39,6 +39,13 @@ DEFAULT_CONFIG = {
 
 # Global dictionary that holds the latest metric values
 metrics = {}
+metrics_lock = threading.Lock()
+
+
+def get_metrics_snapshot() -> dict:
+    """Return a copy of the current metrics safe to iterate during scrapes."""
+    with metrics_lock:
+        return dict(metrics)
 
 def load_config() -> dict:
     """Load configuration from *config.json*.
@@ -412,22 +419,25 @@ def network_dropped_packets() -> int:
 def collect():
     logger.debug("Starting collect()")
     global metrics
-    logger.debug("Declared global metrics")
     try:
         cfg = load_config()
         mode = cfg["mode"]
         logger.debug(f"Collecting metrics in mode: {mode}")
-        metrics["cpu_usage_percent"] = cpu_usage()
-        metrics["memory_usage_percent"] = memory_usage()
+        # Build a complete set off to the side so scrapers never observe
+        # partially collected values.
+        new_metrics = {
+            "cpu_usage_percent": cpu_usage(),
+            "memory_usage_percent": memory_usage(),
+        }
         rd, wr = disk_io()
-        metrics["disk_read_megabytes_total"] = rd
-        metrics["disk_write_megabytes_total"] = wr
+        new_metrics["disk_read_megabytes_total"] = rd
+        new_metrics["disk_write_megabytes_total"] = wr
         rx, tx = network_io()
-        metrics["network_receive_megabytes_total"] = rx
-        metrics["network_transmit_megabytes_total"] = tx
-        metrics["process_count"] = process_count()
+        new_metrics["network_receive_megabytes_total"] = rx
+        new_metrics["network_transmit_megabytes_total"] = tx
+        new_metrics["process_count"] = process_count()
         # Overall filesystem usage percent
-        metrics["filesystem_usage_percent"] = filesystem_usage()
+        new_metrics["filesystem_usage_percent"] = filesystem_usage()
         # Per-device filesystem usage metrics
         device_usage = per_device_filesystem_usage()
         for device, percent in device_usage.items():
@@ -440,24 +450,30 @@ def collect():
             while '__' in sanitized:
                 sanitized = sanitized.replace('__', '_')
             metric_name = f"filesystem_usage_percent_{sanitized}"
-            metrics[metric_name] = percent
+            new_metrics[metric_name] = percent
         # Swap usage percent
-        metrics["swap_usage_percent"] = swap_usage_percent()
+        new_metrics["swap_usage_percent"] = swap_usage_percent()
         # Network dropped packets total
-        metrics["network_dropped_packets_total"] = network_dropped_packets()
+        new_metrics["network_dropped_packets_total"] = network_dropped_packets()
         if mode == "metal":
-            metrics["temperature_celsius"] = temperature()
-            metrics["smart_health_status"] = smart_health()
+            new_metrics["temperature_celsius"] = temperature()
+            new_metrics["smart_health_status"] = smart_health()
         else:
-            metrics["temperature_celsius"] = 0.0
-            metrics["smart_health_status"] = -1
-        logger.info(f"Metrics collected successfully: {len(metrics)} keys")
+            new_metrics["temperature_celsius"] = 0.0
+            new_metrics["smart_health_status"] = -1
+        # Publish under the same lock used by scrapers. Rebuilding the dict
+        # also removes per-device keys for devices that disappeared.
+        with metrics_lock:
+            metrics.clear()
+            metrics.update(new_metrics)
+        logger.info(f"Metrics collected successfully: {len(new_metrics)} keys")
     except Exception as e:
         logger.error(f"Error in collect(): {e}", exc_info=True)
         # Ensure metrics dict is not corrupted
-        if not isinstance(metrics, dict):
-            metrics = {}
-            logger.error("Metrics dict corrupted, reset to empty")
+        with metrics_lock:
+            if not isinstance(metrics, dict):
+                metrics = {}
+                logger.error("Metrics dict corrupted, reset to empty")
 
 
 def collector_thread():
@@ -487,11 +503,9 @@ class MetricsHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 logger.warning(f"404 for path: {self.path}")
                 return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; version=0.0.4")
-            self.end_headers()
+            snapshot = get_metrics_snapshot()
             lines = []
-            for name, value in metrics.items():
+            for name, value in snapshot.items():
                 lines.append(f"# HELP {name} {name.replace('_', ' ')}")
                 lines.append(f"# TYPE {name} gauge")
                 if isinstance(value, float):
@@ -500,8 +514,11 @@ class MetricsHandler(http.server.BaseHTTPRequestHandler):
                     value_str = str(value)
                 lines.append(f"{name} {value_str}")
             output = ("\n".join(lines) + "\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.end_headers()
             self.wfile.write(output)
-            logger.info(f"Served /metrics: {len(metrics)} metrics, {len(output)} bytes")
+            logger.info(f"Served /metrics: {len(snapshot)} metrics, {len(output)} bytes")
         except Exception as e:
             logger.error(f"Error serving /metrics: {e}", exc_info=True)
             self.send_response(500)
