@@ -26,7 +26,7 @@ A minimal, self‑contained metrics exporter written in **Python 3** with a tin
 | `temperature_celsius` | Average temperature (metal only) |
 | `smart_health_status` | SMART health (1 = PASSED, 0 = FAILED, -1 = N/A) |
 
-All metrics are exposed as **gauges**. Network and disk I/O metrics use megabytes for better readability. Per-device filesystem metrics are dynamically generated for block devices only (e.g., /dev/sda1), increasing cardinality slightly.
+Metrics ending in `_total` are exposed as **counters** (cumulative); all other metrics are exposed as **gauges**. Network and disk I/O metrics use megabytes for better readability. Per-device filesystem metrics are dynamically generated for block devices only (e.g., /dev/sda1), increasing cardinality slightly.
 
 ## Installation
 ```bash

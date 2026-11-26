@@ -64,10 +64,17 @@ def load_config() -> dict:
         logger.warning(f"Config load failed ({e}), using defaults")
         # Missing file or malformed JSON – fall back to defaults
         cfg = {}
+    if not isinstance(cfg, dict):
+        logger.warning(f"Config root is not an object ({type(cfg).__name__}), using defaults")
+        cfg = {}
     # Merge defaults
     for k, v in DEFAULT_CONFIG.items():
         cfg.setdefault(k, v)
-    cfg["mode"] = cfg["mode"].lower()
+    if isinstance(cfg["mode"], str):
+        cfg["mode"] = cfg["mode"].lower()
+    else:
+        logger.warning(f"Config mode is not a string ({cfg['mode']!r}), using default")
+        cfg["mode"] = "metal"
     if cfg["mode"] not in ("metal", "vm"):
         cfg["mode"] = "metal"
     logger.info(f"Final config mode: {cfg['mode']}, interval: {cfg['interval']}, port: {cfg['port']}")
@@ -253,12 +260,16 @@ def filesystem_usage() -> float:
                 continue
             parts = line.split()
             if len(parts) >= 6:
-                try:
-                    total += int(parts[1])
-                    used += int(parts[2])
-                except Exception as e:
-                    logger.debug(f"Filesystem aggregate parse error: {e}")
-                    pass
+                device = parts[0]
+                # Restrict to real block devices (same filter as per-device
+                # breakdown) so pseudo filesystems aren't double-counted.
+                if device.startswith('/dev/') and not any(x in device for x in ['tmpfs', 'devtmpfs', 'squashfs']):
+                    try:
+                        total += int(parts[1])
+                        used += int(parts[2])
+                    except Exception as e:
+                        logger.debug(f"Filesystem aggregate parse error: {e}")
+                        pass
         percent = (used / total) * 100.0 if total else 0.0
         logger.debug(f"Aggregate filesystem: {percent}% used ({used}/{total} bytes)")
         return percent
@@ -403,6 +414,8 @@ def network_dropped_packets() -> int:
                 if len(fields) >= 4:
                     try:
                         dropped += int(fields[3])
+                        if len(fields) >= 16:
+                            dropped += int(fields[12])
                         interfaces += 1
                     except Exception as e:
                         logger.debug(f"Dropped packets parse error: {e}")
@@ -506,8 +519,9 @@ class MetricsHandler(http.server.BaseHTTPRequestHandler):
             snapshot = get_metrics_snapshot()
             lines = []
             for name, value in snapshot.items():
+                metric_type = "counter" if name.endswith("_total") else "gauge"
                 lines.append(f"# HELP {name} {name.replace('_', ' ')}")
-                lines.append(f"# TYPE {name} gauge")
+                lines.append(f"# TYPE {name} {metric_type}")
                 if isinstance(value, float):
                     value_str = "%.3f" % value
                 else:
