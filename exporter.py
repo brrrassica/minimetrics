@@ -335,7 +335,8 @@ def temperature() -> float:
 
 def smart_health() -> int:
     """Query all block devices with lsblk, check SMART health for each supported disk.
-    Returns 1 if all supported disks PASSED, -1 if any FAILED. Ignores unsupported disks.
+    Returns 1 if all supported disks PASSED, 0 if any FAILED. Ignores unsupported disks.
+    Returns -1 only when collection fails or SMART is not applicable.
     """
     try:
         # Get list of disk names
@@ -363,7 +364,7 @@ def smart_health() -> int:
                 health_line = health_lines[0]
                 if "FAILED" in health_line:
                     logger.warning(f"SMART health: FAILED on {device}")
-                    return -1
+                    return 0
                 else:
                     logger.debug(f"SMART health: PASSED on {device}")
             else:
